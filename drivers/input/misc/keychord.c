@@ -126,8 +126,12 @@ static void keychord_event(struct input_handle *handle, unsigned int type,
 done:
 	spin_unlock_irqrestore(&kdev->lock, flags);
 
-	if (got_chord)
+	if (got_chord) {
+		pr_info("keychord: got keychord id %d. Any tasks: %d\n",
+			keychord->id,
+			!list_empty_careful(&kdev->waitq.task_list));
 		wake_up_interruptible(&kdev->waitq);
+	}
 }
 
 static int keychord_connect(struct input_handler *handler,
@@ -296,8 +300,10 @@ static ssize_t keychord_write(struct file *file, const char __user *buffer,
 
 	ret = input_register_handler(&kdev->input_handler);
 	if (ret) {
-		kfree(keychords);
+		spin_lock_irqsave(&kdev->lock, flags);
+		kfree(kdev->keychords);
 		kdev->keychords = 0;
+		spin_unlock_irqrestore(&kdev->lock, flags);
 		return ret;
 	}
 	kdev->registered = 1;

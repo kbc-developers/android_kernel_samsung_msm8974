@@ -113,9 +113,6 @@ enum pageflags {
 	PG_scfslower,
 	PG_nocache,
 #endif
-#ifdef CONFIG_SDP
-	PG_sensitive,
-#endif
 #ifdef CONFIG_ZCACHE
 	PG_was_active,
 #endif
@@ -303,24 +300,6 @@ PAGEFLAG(CMA, cma)
 #endif
 
 u64 stable_page_flags(struct page *page);
-#ifdef CONFIG_SDP
-static inline int PageSensitive(struct page *page)
-{
-	int ret = test_bit(PG_sensitive, &(page)->flags);
-	if (ret)
-		smp_rmb();
-
-	return ret;
-}
-
-static inline void SetPageSensitive(struct page *page)
-{
-	smp_wmb();
-	__set_bit(PG_sensitive, &(page)->flags);
-}
-
-CLEARPAGEFLAG(Sensitive, sensitive)
-#endif
 
 static inline int PageUptodate(struct page *page)
 {
@@ -407,7 +386,7 @@ static inline void ClearPageCompound(struct page *page)
  * pages on the LRU and/or pagecache.
  */
 TESTPAGEFLAG(Compound, compound)
-__PAGEFLAG(Head, compound)
+__SETPAGEFLAG(Head, compound)  __CLEARPAGEFLAG(Head, compound)
 
 /*
  * PG_reclaim is used in combination with PG_compound to mark the
@@ -419,7 +398,13 @@ __PAGEFLAG(Head, compound)
  * PG_compound & PG_reclaim	=> Tail page
  * PG_compound & ~PG_reclaim	=> Head page
  */
+#define PG_head_mask ((1L << PG_compound))
 #define PG_head_tail_mask ((1L << PG_compound) | (1L << PG_reclaim))
+
+static inline int PageHead(struct page *page)
+{
+	return ((page->flags & PG_head_tail_mask) == PG_head_mask);
+}
 
 static inline int PageTail(struct page *page)
 {

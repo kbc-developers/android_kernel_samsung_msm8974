@@ -382,10 +382,9 @@ static int context_alloc(struct fastrpc_apps *me, uint32_t kernel,
 
 	INIT_HLIST_NODE(&ctx->hn);
 	hlist_add_fake(&ctx->hn);
-	ctx->pra = (remote_arg_t*)(&ctx[1]);
-	ctx->fds = invokefd->fds == 0 ? 0 : (int*)(&ctx->pra[bufs]);
-	ctx->handles = invokefd->fds == 0 ? 0 : (struct ion_handle**)(&ctx->fds[bufs]);
-
+	ctx->pra = (remote_arg_t *)(&ctx[1]);
+	ctx->fds = invokefd->fds == 0 ? 0 : (int *)(&ctx->pra[bufs]);
+	ctx->handles = invokefd->fds == 0 ? 0 :(struct ion_handle **)(&ctx->fds[bufs]);
 	if (!kernel) {
 		VERIFY(err, 0 == copy_from_user(ctx->pra, invoke->pra,
 					bufs * sizeof(*ctx->pra)));
@@ -526,7 +525,8 @@ static int get_page_list(uint32_t kernel, uint32_t sc, remote_arg_t *pra,
 	pgstart->size = obuf->size;
 	for (i = 0; i < inbufs + outbufs; ++i) {
 		void *buf;
-		int len, num;
+		int num;
+		ssize_t len;
 
 		list[i].num = 0;
 		list[i].pgidx = 0;

@@ -39,16 +39,6 @@
 #define ECRYPTFS_WAS_ENCRYPTED 0x0080
 #define ECRYPTFS_WAS_ENCRYPTED_OTHER_DEVICE 0x0100
 #endif
-#ifdef CONFIG_SDP
-#if 0
-#include <linux/fs.h>
-#include <linux/syscalls.h>
-#include <linux/atomic.h>
-#endif
-#include "ecryptfs_dek.h"
-#include "mm.h"
-#endif
-
 
 /**
  * ecryptfs_read_update_atime
@@ -240,6 +230,19 @@ out:
 	return rc;
 }
 
+static int ecryptfs_mmap(struct file *file, struct vm_area_struct *vma)
+{
+	struct file *lower_file = ecryptfs_file_to_lower(file);
+	/*
+	 * Don't allow mmap on top of file systems that don't support it
+	 * natively.  If FILESYSTEM_MAX_STACK_DEPTH > 2 or ecryptfs
+	 * allows recursive mounting, this will need to be extended.
+	 */
+	if (!lower_file->f_op->mmap)
+		return -ENODEV;
+	return generic_file_mmap(file, vma);
+}
+
 /**
  * ecryptfs_open
  * @inode: inode speciying file to open
@@ -253,24 +256,12 @@ static int ecryptfs_open(struct inode *inode, struct file *file)
 {
 	int rc = 0;
 	struct ecryptfs_crypt_stat *crypt_stat = NULL;
-	struct ecryptfs_mount_crypt_stat *mount_crypt_stat;
 	struct dentry *ecryptfs_dentry = file->f_path.dentry;
 	/* Private value of ecryptfs_dentry allocated in
 	 * ecryptfs_lookup() */
 	struct dentry *lower_dentry;
 	struct ecryptfs_file_info *file_info;
 
-	mount_crypt_stat = &ecryptfs_superblock_to_private(
-		ecryptfs_dentry->d_sb)->mount_crypt_stat;
-	if ((mount_crypt_stat->flags & ECRYPTFS_ENCRYPTED_VIEW_ENABLED)
-	    && ((file->f_flags & O_WRONLY) || (file->f_flags & O_RDWR)
-		|| (file->f_flags & O_CREAT) || (file->f_flags & O_TRUNC)
-		|| (file->f_flags & O_APPEND))) {
-		printk(KERN_WARNING "Mount has encrypted view enabled; "
-		       "files may only be read\n");
-		rc = -EPERM;
-		goto out;
-	}
 	/* Released in ecryptfs_release or end of function if failure */
 	file_info = kmem_cache_zalloc(ecryptfs_file_info_cache, GFP_KERNEL);
 	ecryptfs_set_file_private(file, file_info);
@@ -316,49 +307,10 @@ static int ecryptfs_open(struct inode *inode, struct file *file)
 		goto out;
 	}
 	rc = read_or_initialize_metadata(ecryptfs_dentry);
-	if (rc)
+	if (rc) {
 		goto out_put;
-#ifdef CONFIG_SDP
-	if (crypt_stat->flags & ECRYPTFS_DEK_IS_SENSITIVE) {
-		if (ecryptfs_is_persona_locked(crypt_stat->userid)) {
-			ecryptfs_printk(KERN_INFO, "ecryptfs_open: persona is locked, rc=%d\n", rc);
-			if (file->f_flags & O_SDP) {
-				ecryptfs_printk(KERN_INFO, "ecryptfs_open: O_SDP is set, allow open, rc=%d\n", rc);
-				mutex_lock(&crypt_stat->cs_mutex);
-				crypt_stat->flags &= ~(ECRYPTFS_KEY_VALID);
-				mutex_unlock(&crypt_stat->cs_mutex);
-			} else {
-				mutex_lock(&crypt_stat->cs_mutex);
-				crypt_stat->flags &= ~(ECRYPTFS_KEY_VALID);
-				mutex_unlock(&crypt_stat->cs_mutex);
-				rc = -EACCES;
-				goto out_put;
-			}
-		} else {
-			int dek_type = crypt_stat->sdp_dek.type;
+	}
 
-			ecryptfs_printk(KERN_INFO, "ecryptfs_open: persona is unlocked, rc=%d\n", rc);
-			if(dek_type != DEK_TYPE_AES_ENC) {
-				ecryptfs_printk(KERN_DEBUG, "converting dek...\n");
-				rc = ecryptfs_sdp_convert_dek(ecryptfs_dentry);
-				ecryptfs_printk(KERN_DEBUG, "conversion ready, rc=%d\n", rc);
-				rc = 0; // TODO: Do we need to return error if conversion fails?
-				/*
-				if(!(file->f_flags & O_SDP)){
-					ecryptfs_printk(KERN_WARNING, "Busy sensitive file (try again later)\n");
-					rc = -EBUSY;
-					goto out_put;
-				}
-				*/
-			}
-		}
-	}
-#if ECRYPTFS_DEK_DEBUG
-	else {
-		ecryptfs_printk(KERN_INFO, "ecryptfs_open: dek_file_type is protected");
-	}
-#endif
-#endif
 	ecryptfs_printk(KERN_DEBUG, "inode w/ addr = [0x%p], i_ino = "
 			"[0x%.16lx] size: [0x%.16llx]\n", inode, inode->i_ino,
 			(unsigned long long)i_size_read(inode));
@@ -386,41 +338,8 @@ static int ecryptfs_flush(struct file *file, fl_owner_t td)
 
 static int ecryptfs_release(struct inode *inode, struct file *file)
 {
-#ifdef CONFIG_SDP
 	struct ecryptfs_crypt_stat *crypt_stat;
-
 	crypt_stat = &ecryptfs_inode_to_private(inode)->crypt_stat;
-
-	if((crypt_stat->flags & ECRYPTFS_DEK_IS_SENSITIVE) &&
-			ecryptfs_is_persona_locked(crypt_stat->userid)) {
-#if 0
-#ifdef SYNC_ONLY_CURRENT_SB
-		struct super_block *sb = inode->i_sb;
-
-		sync_inodes_sb(sb);
-		writeback_inodes_sb(sb, WB_REASON_SYNC);
-#else
-		sys_sync();
-#endif
-		printk("%s() sensitive inode being closed. [ino:%lu, state:%lu ref_count:%d efs_flag:0x%0.8x]\n",
-				__func__, inode->i_ino,  inode->i_state, atomic_read(&inode->i_count),
-				crypt_stat->flags);
-
-		spin_lock(&inode->i_lock);
-
-		if ((inode->i_state & (I_FREEING|I_WILL_FREE|I_NEW)) ||
-				(inode->i_mapping->nrpages == 0)) {
-			spin_unlock(&inode->i_lock);
-		} else {
-			printk("freeing sensitive inode\n");
-			invalidate_mapping_pages(inode->i_mapping, 0, -1);
-		}
-		spin_unlock(&inode->i_lock);
-#else
-		ecryptfs_mm_drop_cache(crypt_stat->userid);
-	}
-#endif
-#endif
 
 	ecryptfs_put_lower_file(inode);
 	kmem_cache_free(ecryptfs_file_info_cache,
@@ -489,19 +408,24 @@ ecryptfs_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	}
 #endif
 
-#ifdef CONFIG_SDP
-	rc = ecryptfs_do_sdp_ioctl(file, cmd, arg);
-	if (rc == 0) {
-		return rc;
-	}
-#else
-	printk("%s CONFIG_SDP not enabled \n", __func__);
-#endif
 	if (ecryptfs_file_to_private(file))
 		lower_file = ecryptfs_file_to_lower(file);
-	if (lower_file && lower_file->f_op && lower_file->f_op->unlocked_ioctl)
+	if (!(lower_file && lower_file->f_op && lower_file->f_op->unlocked_ioctl))
+		return rc;
+
+	switch (cmd) {
+	case FITRIM:
+	case FS_IOC_GETFLAGS:
+	case FS_IOC_SETFLAGS:
+	case FS_IOC_GETVERSION:
+	case FS_IOC_SETVERSION:
 		rc = lower_file->f_op->unlocked_ioctl(lower_file, cmd, arg);
-	return rc;
+		fsstack_copy_attr_all(file->f_path.dentry->d_inode,
+				      lower_file->f_path.dentry->d_inode);
+		return rc;
+	default:
+		return rc;
+	}
 }
 
 #ifdef CONFIG_COMPAT
@@ -513,9 +437,22 @@ ecryptfs_compat_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 	if (ecryptfs_file_to_private(file))
 		lower_file = ecryptfs_file_to_lower(file);
-	if (lower_file && lower_file->f_op && lower_file->f_op->compat_ioctl)
+	if (!(lower_file && lower_file->f_op && lower_file->f_op->compat_ioctl))
+		return rc;
+
+	switch (cmd) {
+	case FITRIM:
+	case FS_IOC32_GETFLAGS:
+	case FS_IOC32_SETFLAGS:
+	case FS_IOC32_GETVERSION:
+	case FS_IOC32_SETVERSION:
 		rc = lower_file->f_op->compat_ioctl(lower_file, cmd, arg);
-	return rc;
+		fsstack_copy_attr_all(file->f_path.dentry->d_inode,
+				      lower_file->f_path.dentry->d_inode);
+		return rc;
+	default:
+		return rc;
+	}
 }
 #endif
 
@@ -627,7 +564,7 @@ const struct file_operations ecryptfs_main_fops = {
 #ifdef CONFIG_COMPAT
 	.compat_ioctl = ecryptfs_compat_ioctl,
 #endif
-	.mmap = generic_file_mmap,
+	.mmap = ecryptfs_mmap,
 	.open = ecryptfs_open,
 	.flush = ecryptfs_flush,
 	.release = ecryptfs_release,

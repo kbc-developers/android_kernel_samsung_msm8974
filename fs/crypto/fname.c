@@ -15,7 +15,6 @@
 #include <keys/encrypted-type.h>
 #include <keys/user-type.h>
 #include <linux/crypto.h>
-#include <linux/module.h>
 #include <linux/scatterlist.h>
 #include <linux/ratelimit.h>
 #include <linux/fscrypto.h>
@@ -364,7 +363,7 @@ int fscrypt_setup_filename(struct inode *dir, const struct qstr *iname,
 		fname->disk_name.len = iname->len;
 		return 0;
 	}
-	ret = get_crypt_info(dir);
+	ret = fscrypt_get_encryption_info(dir);
 	if (ret && ret != -EOPNOTSUPP)
 		return ret;
 

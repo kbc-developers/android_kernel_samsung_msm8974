@@ -497,9 +497,6 @@ static void ncm_do_notify(struct f_ncm *ncm)
 	struct usb_composite_dev	*cdev = ncm->port.func.config->cdev;
 	__le32				*data;
 	int				status;
-#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
-	struct eth_dev      *dev = ncm->port.ioport;
-#endif
 
 	/* notification already in flight? */
 	if (!req)
@@ -508,15 +505,6 @@ static void ncm_do_notify(struct f_ncm *ncm)
 	event = req->buf;
 	switch (ncm->notify_state) {
 	case NCM_NOTIFY_NONE:
-#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
-        if(ncm->is_open) {
-            printk(KERN_INFO "usb: %s: set net carrier on after notify done\n",__func__);
-            netif_carrier_on(dev->net);
-        } else {
-            printk(KERN_INFO "usb: %s: set net carrier off after notify done\n",__func__);
-            netif_carrier_off(dev->net);
-        }
-#endif
 		return;
 
 	case NCM_NOTIFY_CONNECT:
@@ -1020,6 +1008,9 @@ static struct sk_buff *ncm_wrap_ntb(struct gether *port,
 	int		pad;
 	int		ndp_align = ntb_parameters.wNdpInAlignment;
 	int		ndp_pad;
+#ifdef CONFIG_USB_NCM_SUPPORT_MTU_CHANGE
+	int		force_shortpkt = 0;
+#endif
 	unsigned	max_size = ncm->port.fixed_in_len;
 	struct ndp_parser_opts *opts = ncm->parser_opts;
 	unsigned	crc_len = ncm->is_crc ? sizeof(uint32_t) : 0;
@@ -1038,8 +1029,20 @@ static struct sk_buff *ncm_wrap_ntb(struct gether *port,
 		return NULL;
 	}
 
+#ifdef CONFIG_USB_NCM_SUPPORT_MTU_CHANGE
+	if ((ncb_len + skb->len + crc_len < max_size) && (((ncb_len + skb->len + crc_len) %
+		le16_to_cpu(ncm->port.in_ep->desc->wMaxPacketSize)) == 0)) {
+		/* force short packet */
+		printk(KERN_ERR "usb: force short packet %d  \n",ncm->port.in_ep->desc->wMaxPacketSize);
+		force_shortpkt = 1;
+	}
+#endif
 	skb2 = skb_copy_expand(skb, ncb_len,
+#ifdef CONFIG_USB_NCM_SUPPORT_MTU_CHANGE
+			       force_shortpkt,
+#else
 			       max_size - skb->len - ncb_len - crc_len,
+#endif
 			       GFP_ATOMIC);
 	dev_kfree_skb_any(skb);
 #ifdef CONFIG_USB_NCM_SUPPORT_MTU_CHANGE
@@ -1061,7 +1064,11 @@ static struct sk_buff *ncm_wrap_ntb(struct gether *port,
 	/* wHeaderLength */
 	put_unaligned_le16(opts->nth_size, tmp++);
 	tmp++; /* skip wSequence */
+#ifdef CONFIG_USB_NCM_SUPPORT_MTU_CHANGE
+	put_ncm(&tmp, opts->block_length, skb->len + force_shortpkt); /* (d)wBlockLength */
+#else
 	put_ncm(&tmp, opts->block_length, skb->len); /* (d)wBlockLength */
+#endif
 	/* (d)wFpIndex */
 	/* the first pointer is right after the NTH + align */
 	put_ncm(&tmp, opts->fp_index, opts->nth_size + ndp_pad);
@@ -1102,6 +1109,12 @@ static struct sk_buff *ncm_wrap_ntb(struct gether *port,
 		memset(skb_put(skb, max_size - skb->len),
 		       0, max_size - skb->len);
 		printk(KERN_ERR"usb:%s Expanding the buffer %d \n",__func__,skb->len);
+	}
+#else
+	if (force_shortpkt) {
+		memset(skb_put(skb, force_shortpkt),
+		       0, force_shortpkt);
+		printk(KERN_ERR"usb:%s final Expanding the buffer %d \n",__func__,skb->len);
 	}
 #endif
 	return skb;
@@ -1417,9 +1430,9 @@ fail:
 	/* we might as well release our claims on endpoints */
 	if (ncm->notify)
 		ncm->notify->driver_data = NULL;
-	if (ncm->port.out_ep->desc)
+	if (ncm->port.out_ep)
 		ncm->port.out_ep->driver_data = NULL;
-	if (ncm->port.in_ep->desc)
+	if (ncm->port.in_ep)
 		ncm->port.in_ep->driver_data = NULL;
 
 	ERROR(cdev, "%s: can't bind, err %d\n", f->name, status);

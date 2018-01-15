@@ -31,9 +31,7 @@ struct sns_adsp_control_s {
 	struct device *dev;
 	struct cdev *cdev;
 };
-
 static struct sns_adsp_control_s sns_ctl;
-
 
 /*
  * Read QTimer clock ticks and scale down to 32KHz clock as used
@@ -113,7 +111,6 @@ EXPORT_SYMBOL(get_adsp_sensor_class);
 static int sensors_adsp_probe(struct platform_device *pdev)
 {
 	int ret = 0;
-
 #ifdef CONFIG_ADSP_FACTORY
 	pr_err("%s:++",__func__);
 	if (sns_ctl.dev_class == NULL) {

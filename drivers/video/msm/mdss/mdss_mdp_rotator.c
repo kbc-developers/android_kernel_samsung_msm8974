@@ -658,6 +658,7 @@ static int mdss_mdp_rotator_finish(struct mdss_mdp_rotator_session *rot)
 			flush_work(&rot->commit_work);
 			mutex_lock(&rotator_lock);
 		}
+
 		mdss_mdp_rotator_busy_wait(rot);
 		list_del(&rot->head);
 	}

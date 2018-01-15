@@ -362,6 +362,7 @@ static void lpm_system_prepare(struct lpm_system_state *system_state,
 	spin_lock(&system_state->sync_lock);
 	if (index < 0 ||
 			num_powered_cores != system_state->num_cores_in_sync) {
+		lpm_set_l2_mode(system_state, default_l2_mode);
 		spin_unlock(&system_state->sync_lock);
 		return;
 	}

@@ -142,9 +142,7 @@ struct fcc_sample {
 struct bms_irq {
 	unsigned int	irq;
 	unsigned long	disabled;
-	unsigned long	wake_enabled;
 	bool		ready;
-	bool		is_wake;
 };
 
 struct bms_wakeup_source {
@@ -457,9 +455,6 @@ static void enable_bms_irq(struct bms_irq *irq)
 	if (irq->ready && __test_and_clear_bit(0, &irq->disabled)) {
 		enable_irq(irq->irq);
 		pr_debug("enabled irq %d\n", irq->irq);
-		if ((irq->is_wake) &&
-				!__test_and_set_bit(0, &irq->wake_enabled))
-			enable_irq_wake(irq->irq);
 	}
 }
 
@@ -468,9 +463,6 @@ static void disable_bms_irq(struct bms_irq *irq)
 	if (irq->ready && !__test_and_set_bit(0, &irq->disabled)) {
 		disable_irq(irq->irq);
 		pr_debug("disabled irq %d\n", irq->irq);
-		if ((irq->is_wake) &&
-				__test_and_clear_bit(0, &irq->wake_enabled))
-			disable_irq_wake(irq->irq);
 	}
 }
 
@@ -479,9 +471,6 @@ static void disable_bms_irq_nosync(struct bms_irq *irq)
 	if (irq->ready && !__test_and_set_bit(0, &irq->disabled)) {
 		disable_irq_nosync(irq->irq);
 		pr_debug("disabled irq %d\n", irq->irq);
-		if ((irq->is_wake) &&
-				__test_and_clear_bit(0, &irq->wake_enabled))
-			disable_irq_wake(irq->irq);
 	}
 }
 
@@ -2011,7 +2000,7 @@ static int report_cc_based_soc(struct qpnp_bms_chip *chip)
 	last_change_sec = chip->last_soc_change_sec;
 	calculate_delta_time(&last_change_sec, &time_since_last_change_sec);
 
-	charging = chip->battery_status == POWER_SUPPLY_STATUS_CHARGING;
+	charging = is_battery_charging(chip);
 	charging_since_last_report = charging || (chip->last_soc_unbound
 			&& chip->was_charging_at_sleep);
 	/*
@@ -2802,7 +2791,7 @@ static int recalculate_raw_soc(struct qpnp_bms_chip *chip)
 			rc = read_soc_params_raw(chip, &raw, batt_temp);
 			if (rc) {
 				pr_err("Unable to read params, rc: %d\n", rc);
-				soc = 0;
+				soc = chip->calculated_soc;
 				goto done;
 			}
 			calculate_soc_params(chip, &raw, &params, batt_temp);
@@ -4397,11 +4386,18 @@ static inline int bms_read_properties(struct qpnp_bms_chip *chip)
 		pr_err("Missing required properties.\n");
 		return rc;
     }
-  #if defined(CONFIG_SEC_MATISSE_PROJECT) || defined(CONFIG_SEC_T10_PROJECT)
+
+  #if defined(CONFIG_MACH_MATISSE3G_OPEN)
       chip->use_ocv_thresholds = 1;
       chip->ocv_low_threshold_uv = 3600000;
-      chip->ocv_high_threshold_uv = 3750000;
+      chip->ocv_high_threshold_uv = 3850000;
       chip->adjust_soc_low_threshold = 3;
+      chip->shutdown_soc_valid_limit = 70;
+  #elif defined(CONFIG_SEC_MATISSE_PROJECT) || defined(CONFIG_SEC_T10_PROJECT)
+      chip->use_ocv_thresholds = 1;
+      chip->ocv_low_threshold_uv = 3400000;
+      chip->ocv_high_threshold_uv = 3850000;
+      chip->adjust_soc_low_threshold = 2;
       chip->shutdown_soc_valid_limit = 70;
   #elif defined(CONFIG_SEC_MILLET_PROJECT)
       chip->use_ocv_thresholds = 1;
@@ -4519,11 +4515,11 @@ static int bms_request_irqs(struct qpnp_bms_chip *chip)
 	int rc;
 
 	SPMI_REQUEST_IRQ(chip, rc, sw_cc_thr);
-	chip->sw_cc_thr_irq.is_wake = true;
 	disable_bms_irq(&chip->sw_cc_thr_irq);
+	enable_irq_wake(chip->sw_cc_thr_irq.irq);
 	SPMI_REQUEST_IRQ(chip, rc, ocv_thr);
-	chip->ocv_thr_irq.is_wake = true;
 	disable_bms_irq(&chip->ocv_thr_irq);
+	enable_irq_wake(chip->ocv_thr_irq.irq);
 	return 0;
 }
 

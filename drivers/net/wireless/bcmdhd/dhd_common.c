@@ -21,7 +21,7 @@
  * software in any way with any other Broadcom software provided under a license
  * other than the GPL, without Broadcom's express prior written consent.
  *
- * $Id: dhd_common.c 557500 2015-05-19 06:30:12Z $
+ * $Id: dhd_common.c 605803 2015-12-11 14:44:32Z $
  */
 #include <typedefs.h>
 #include <osl.h>
@@ -74,9 +74,6 @@ extern void htsf_update(struct dhd_info *dhd, void *data);
 #endif
 int dhd_msg_level = DHD_ERROR_VAL;
 
-
-#include <wl_iw.h>
-
 #ifdef SOFTAP
 char fw_path2[MOD_PARAM_PATHLEN];
 extern bool softap_enabled;
@@ -113,6 +110,9 @@ const char dhd_version[] = "Dongle Host Driver, version " EPI_VERSION_STR
 #else
 const char dhd_version[] = "\nDongle Host Driver, version " EPI_VERSION_STR "\nCompiled from ";
 #endif 
+#ifdef DHD_LOG_DUMP
+char fw_version[FW_VER_STR_LEN] = "\0";
+#endif /* DHD_LOG_DUMP */
 
 void dhd_set_timer(void *bus, uint wdtick);
 
@@ -220,6 +220,8 @@ dhd_dump(dhd_pub_t *dhdp, char *buf, int buflen)
 
 	struct bcmstrbuf b;
 	struct bcmstrbuf *strbuf = &b;
+	if (!dhdp || !dhdp->prot || !buf)
+		return BCME_ERROR;
 
 	bcm_binit(strbuf, buf, buflen);
 
@@ -287,7 +289,18 @@ dhd_wl_ioctl(dhd_pub_t *dhd_pub, int ifindex, wl_ioctl_t *ioc, void *buf, int le
 
 	if (dhd_os_proto_block(dhd_pub))
 	{
+#ifdef DHD_LOG_DUMP
+		int slen, i, val, rem;
+		long int lval;
+		char *pval, *pos, *msg;
+		char tmp[64];
 
+		/* WLC_GET_VAR */
+		if (ioc->cmd == WLC_GET_VAR) {
+			memset(tmp, 0, sizeof(tmp));
+			bcopy(ioc->buf, tmp, strlen(ioc->buf) + 1);
+		}
+#endif /* DHD_LOG_DUMP */
 		ret = dhd_prot_ioctl(dhd_pub, ifindex, ioc, buf, len);
 #if defined(CUSTOMER_HW4)
 		if ((ret || ret == -ETIMEDOUT) && (dhd_pub->up))
@@ -305,6 +318,44 @@ dhd_wl_ioctl(dhd_pub_t *dhd_pub, int ifindex, wl_ioctl_t *ioc, void *buf, int le
 		}
 
 		dhd_os_proto_unblock(dhd_pub);
+
+#ifdef DHD_LOG_DUMP
+		if (ioc->cmd == WLC_GET_VAR || ioc->cmd == WLC_SET_VAR) {
+			lval = 0;
+			slen = strlen(ioc->buf) + 1;
+			msg = (char*)ioc->buf;
+			if (ioc->cmd == WLC_GET_VAR) {
+				bcopy(msg, &lval, sizeof(long int));
+				msg = tmp;
+			} else {
+				bcopy((msg + slen), &lval, sizeof(long int));
+			}
+			DHD_ERROR_EX(("%s: cmd: %d, msg: %s, val: 0x%lx, len: %d, set: %d\n",
+				ioc->cmd == WLC_GET_VAR ? "WLC_GET_VAR" : "WLC_SET_VAR",
+				ioc->cmd, msg, lval, ioc->len, ioc->set));
+		} else {
+			slen = ioc->len;
+			if (ioc->buf != NULL) {
+				val = *(int*)ioc->buf;
+				pval = (char*)ioc->buf;
+				pos = tmp;
+				rem = sizeof(tmp);
+				memset(tmp, 0, sizeof(tmp));
+				for (i = 0; i < slen; i++) {
+					pos += snprintf(pos, rem, "%02x ", pval[i]);
+					rem = sizeof(tmp) - (int)(pos - tmp);
+					if (rem <= 0) {
+						break;
+					}
+				}
+				DHD_ERROR_EX(("WLC_IOCTL: cmd: %d, val: %d (%s), len: %d, "
+					"set: %d\n", ioc->cmd, val, tmp, ioc->len, ioc->set));
+			} else {
+				DHD_ERROR_EX(("WLC_IOCTL: cmd: %d, buf is NULL\n", ioc->cmd));
+			}
+		}
+#endif /* DHD_LOG_DUMP */
+
 
 #if defined(CUSTOMER_HW4)
 		if (ret < 0) {
@@ -1212,16 +1263,18 @@ wl_host_event(dhd_pub_t *dhd_pub, int *ifidx, void *pktdata, size_t pktlen,
 	uint8 *event_data;
 	uint32 type, status, datalen;
 	uint16 flags;
-	int evlen;
+	uint evlen;
 
 	if (bcmp(BRCM_OUI, &pvt_data->bcm_hdr.oui[0], DOT11_OUI_LEN)) {
 		DHD_ERROR(("%s: mismatched OUI, bailing\n", __FUNCTION__));
 		return (BCME_ERROR);
 	}
 
-	/* BRCM event pkt may be unaligned - use xxx_ua to load user_subtype. */
-	if (ntoh16_ua((void *)&pvt_data->bcm_hdr.usr_subtype) != BCMILCP_BCM_SUBTYPE_EVENT) {
-		DHD_ERROR(("%s: mismatched subtype, bailing\n", __FUNCTION__));
+	if (ntoh16_ua((void *)&pvt_data->bcm_hdr.subtype) != BCMILCP_SUBTYPE_VENDOR_LONG ||
+		(bcmp(BRCM_OUI, &pvt_data->bcm_hdr.oui[0], DOT11_OUI_LEN)) ||
+		ntoh16_ua((void *)&pvt_data->bcm_hdr.usr_subtype) != BCMILCP_BCM_SUBTYPE_EVENT)
+	{
+		DHD_ERROR(("%s: mismatched bcm_event_t info, bailing out\n", __FUNCTION__));
 		return (BCME_ERROR);
 	}
 
@@ -1237,15 +1290,13 @@ wl_host_event(dhd_pub_t *dhd_pub, int *ifidx, void *pktdata, size_t pktlen,
 	type = ntoh32_ua((void *)&event->event_type);
 	flags = ntoh16_ua((void *)&event->flags);
 	status = ntoh32_ua((void *)&event->status);
-
 	datalen = ntoh32_ua((void *)&event->datalen);
 	if (datalen > pktlen)
 		return (BCME_ERROR);
 
 	evlen = datalen + sizeof(bcm_event_t);
-	if (evlen > pktlen) {
+	if (evlen > pktlen)
 		return (BCME_ERROR);
-	}
 
 	switch (type) {
 #ifdef PROP_TXSTATUS
@@ -1940,12 +1991,13 @@ dhd_ndo_remove_ip(dhd_pub_t *dhd, int idx)
 	}
 	retcode = dhd_wl_ioctl_cmd(dhd, WLC_SET_VAR, iovbuf, iov_len, TRUE, idx);
 
-	if (retcode)
-		DHD_ERROR(("%s: ndo ip addr remove failed, retcode = %d\n",
+	if (retcode) {
+		DHD_ERROR(("%s: ndo ip addr remove returned (%d)\n",
 		__FUNCTION__, retcode));
-	else
+	} else {
 		DHD_TRACE(("%s: ndo ipaddr entry removed \n",
 		__FUNCTION__));
+	}
 
 	return retcode;
 }
@@ -2200,7 +2252,9 @@ dhd_get_suspend_bcn_li_dtim(dhd_pub_t *dhd)
 	int ret = -1;
 	int dtim_period = 0;
 	int ap_beacon = 0;
+#ifndef ENABLE_MAX_DTIM_IN_SUSPEND
 	int allowed_skip_dtim_cnt = 0;
+#endif /* !ENABLE_MAX_DTIM_IN_SUSPEND */
 	/* Check if associated */
 	if (dhd_is_associated(dhd, NULL, NULL) == FALSE) {
 		DHD_TRACE(("%s NOT assoc ret %d\n", __FUNCTION__, ret));
@@ -2226,6 +2280,12 @@ dhd_get_suspend_bcn_li_dtim(dhd_pub_t *dhd)
 		goto exit;
 	}
 
+#ifdef ENABLE_MAX_DTIM_IN_SUSPEND
+	bcn_li_dtim = (int) (MAX_DTIM_ALLOWED_INTERVAL / (ap_beacon * dtim_period));
+	if (bcn_li_dtim == 0) {
+		bcn_li_dtim = 1;
+	}
+#else /* ENABLE_MAX_DTIM_IN_SUSPEND */
 	/* attemp to use platform defined dtim skip interval */
 	bcn_li_dtim = dhd->suspend_bcn_li_dtim;
 
@@ -2248,6 +2308,7 @@ dhd_get_suspend_bcn_li_dtim(dhd_pub_t *dhd)
 		bcn_li_dtim = (int)(CUSTOM_LISTEN_INTERVAL / dtim_period);
 		DHD_TRACE(("%s agjust dtim_skip as %d\n", __FUNCTION__, bcn_li_dtim));
 	}
+#endif /* ENABLE_MAX_DTIM_IN_SUSPEND */
 
 	DHD_ERROR(("%s beacon=%d bcn_li_dtim=%d DTIM=%d Listen=%d\n",
 		__FUNCTION__, ap_beacon, bcn_li_dtim, dtim_period, CUSTOM_LISTEN_INTERVAL));
@@ -2361,53 +2422,7 @@ wl_iw_parse_data_tlv(char** list_str, void *dst, int dst_size, const char token,
 	return 1;
 }
 
-/*
- *  channel list parsing from cscan tlv list
-*/
-int
-wl_iw_parse_channel_list_tlv(char** list_str, uint16* channel_list,
-                             int channel_num, int *bytes_left)
-{
-	char* str;
-	int idx = 0;
-
-	if ((list_str == NULL) || (*list_str == NULL) ||(bytes_left == NULL) || (*bytes_left < 0)) {
-		DHD_ERROR(("%s error paramters\n", __FUNCTION__));
-		return -1;
-	}
-	str = *list_str;
-
-	while (*bytes_left > 0) {
-
-		if (str[0] != CSCAN_TLV_TYPE_CHANNEL_IE) {
-			*list_str = str;
-			DHD_TRACE(("End channel=%d left_parse=%d %d\n", idx, *bytes_left, str[0]));
-			return idx;
-		}
-		/* Get proper CSCAN_TLV_TYPE_CHANNEL_IE */
-		*bytes_left -= 1;
-		str += 1;
-
-		if (str[0] == 0) {
-			/* All channels */
-			channel_list[idx] = 0x0;
-		}
-		else {
-			channel_list[idx] = (uint16)str[0];
-			DHD_TRACE(("%s channel=%d \n", __FUNCTION__,  channel_list[idx]));
-		}
-		*bytes_left -= 1;
-		str += 1;
-
-		if (idx++ > 255) {
-			DHD_ERROR(("%s Too many channels \n", __FUNCTION__));
-			return -1;
-		}
-	}
-
-	*list_str = str;
-	return idx;
-}
+#define CSCAN_TLV_TYPE_SSID_IE		'S'
 
 /*
  *  SSIDs list parsing from cscan tlv list
@@ -2480,83 +2495,45 @@ wl_iw_parse_ssid_list_tlv(char** list_str, wlc_ssid_t* ssid, int max, int *bytes
 	return idx;
 }
 
-/* Parse a comma-separated list from list_str into ssid array, starting
- * at index idx.  Max specifies size of the ssid array.  Parses ssids
- * and returns updated idx; if idx >= max not all fit, the excess have
- * not been copied.  Returns -1 on empty string, or on ssid too long.
- */
-int
-wl_iw_parse_ssid_list(char** list_str, wlc_ssid_t* ssid, int idx, int max)
+#if defined(DHD_8021X_DUMP)
+/* Parse EAPOL 4 way handshake messages */
+void
+dhd_dump_eapol_4way_message(char *dump_data, bool direction)
 {
-	char* str, *ptr;
-
-	if ((list_str == NULL) || (*list_str == NULL))
-		return -1;
-
-	for (str = *list_str; str != NULL; str = ptr) {
-
-		/* check for next TAG */
-		if (!strncmp(str, GET_CHANNEL, strlen(GET_CHANNEL))) {
-			*list_str	 = str + strlen(GET_CHANNEL);
-			return idx;
+	unsigned char type;
+	int pair, ack, mic, kerr, req, sec, install;
+	unsigned short us_tmp;
+	type = dump_data[18];
+	if (type == 2 || type == 254) {
+		us_tmp = (dump_data[19] << 8) | dump_data[20];
+		pair =  0 != (us_tmp & 0x08);
+		ack = 0  != (us_tmp & 0x80);
+		mic = 0  != (us_tmp & 0x100);
+		kerr =  0 != (us_tmp & 0x400);
+		req = 0  != (us_tmp & 0x800);
+		sec = 0  != (us_tmp & 0x200);
+		install  = 0 != (us_tmp & 0x40);
+		if (!sec && !mic && ack && !install && pair && !kerr && !req) {
+			DHD_ERROR(("ETHER_TYPE_802_1X [%s] : M1 of 4way\n",
+				direction ? "TX" : "RX"));
+		} else if (pair && !install && !ack && mic && !sec && !kerr && !req) {
+			DHD_ERROR(("ETHER_TYPE_802_1X [%s] : M2 of 4way\n",
+				direction ? "TX" : "RX"));
+		} else if (pair && ack && mic && sec && !kerr && !req) {
+			DHD_ERROR(("ETHER_TYPE_802_1X [%s] : M3 of 4way\n",
+				direction ? "TX" : "RX"));
+		} else if (pair && !install && !ack && mic && sec && !req && !kerr) {
+			DHD_ERROR(("ETHER_TYPE_802_1X [%s] : M4 of 4way\n",
+				direction ? "TX" : "RX"));
+		} else {
+			DHD_ERROR(("ETHER_TYPE_802_1X [%s]: ver %d, type %d, replay %d\n",
+				direction ? "TX" : "RX",
+				dump_data[14], dump_data[15], dump_data[30]));
 		}
-
-		if ((ptr = strchr(str, ',')) != NULL) {
-			*ptr++ = '\0';
-		}
-
-		if (strlen(str) > DOT11_MAX_SSID_LEN) {
-			DHD_ERROR(("ssid <%s> exceeds %d\n", str, DOT11_MAX_SSID_LEN));
-			return -1;
-		}
-
-		if (strlen(str) == 0)
-			ssid[idx].SSID_len = 0;
-
-		if (idx < max) {
-			bzero(ssid[idx].SSID, sizeof(ssid[idx].SSID));
-			strncpy((char*)ssid[idx].SSID, str, sizeof(ssid[idx].SSID) - 1);
-			ssid[idx].SSID_len = strlen(str);
-		}
-		idx++;
+	} else {
+		DHD_ERROR(("ETHER_TYPE_802_1X [%s]: ver %d, type %d, replay %d\n",
+				direction ? "TX" : "RX",
+				dump_data[14], dump_data[15], dump_data[30]));
 	}
-	return idx;
 }
-
-/*
- * Parse channel list from iwpriv CSCAN
- */
-int
-wl_iw_parse_channel_list(char** list_str, uint16* channel_list, int channel_num)
-{
-	int num;
-	int val;
-	char* str;
-	char* endptr = NULL;
-
-	if ((list_str == NULL)||(*list_str == NULL))
-		return -1;
-
-	str = *list_str;
-	num = 0;
-	while (strncmp(str, GET_NPROBE, strlen(GET_NPROBE))) {
-		val = (int)strtoul(str, &endptr, 0);
-		if (endptr == str) {
-			printf("could not parse channel number starting at"
-				" substring \"%s\" in list:\n%s\n",
-				str, *list_str);
-			return -1;
-		}
-		str = endptr + strspn(endptr, " ,");
-
-		if (num == channel_num) {
-			DHD_ERROR(("too many channels (more than %d) in channel list:\n%s\n",
-				channel_num, *list_str));
-			return -1;
-		}
-
-		channel_list[num++] = (uint16)val;
-	}
-	*list_str = str;
-	return num;
-}
+#endif /* DHD_8021X_DUMP */

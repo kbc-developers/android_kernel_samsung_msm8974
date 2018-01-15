@@ -36,7 +36,7 @@
 #include <linux/timer.h>
 #include <linux/list.h>
 #include <linux/rtc.h>
-#include <linux/android_alarm.h>
+#include <linux/hrtimer.h>
 #include <linux/regulator/consumer.h>
 #ifdef CONFIG_SENSORS_SSP_STM
 #include <linux/spi/spi.h>
@@ -50,15 +50,16 @@
 #include "ssp_sensorhub.h"
 #endif
 
-#define SSP_DBG		1
-#ifdef CONFIG_SEC_DEBUG
-#define SSP_SEC_DEBUG	1
-#else
+#define SSP_DBG		0
+#define SSP_DATA_DBG 0
+#define SSP_FUNC_DBG 0
 #define SSP_SEC_DEBUG	0
-#endif
 #define SUCCESS		1
 #define FAIL		0
 #define ERROR		-1
+
+/* ssp mcu device ID */
+#define DEVICE_ID 0x55
 
 #define FACTORY_DATA_MAX	100
 #undef SAVE_MAG_LOG/* Magnetic sensor data logging flag */
@@ -72,9 +73,6 @@
 #if SSP_DBG
 #define SSP_FUNC_DBG 1
 #define SSP_DATA_DBG 0
-
-/* ssp mcu device ID */
-#define DEVICE_ID 0x55
 
 
 #define ssp_dbg(dev, format, ...) do { \
@@ -214,6 +212,7 @@ enum {
 #define MSG2SSP_AP_MOBEAM_COUNT_SET		0x33
 #define MSG2SSP_AP_MOBEAM_START			0x34
 #define MSG2SSP_AP_MOBEAM_STOP			0x35
+#define MSG2SSP_AP_SENSOR_LPF			0x37
 
 #define MSG2SSP_AP_FUSEROM			0X01
 

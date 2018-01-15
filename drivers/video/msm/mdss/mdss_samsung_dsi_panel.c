@@ -1723,7 +1723,6 @@ static ssize_t mipi_samsung_disp_siop_store(struct device *dev,
 }
 
 #ifdef LDI_FPS_CHANGE
-static int ldi_fps_state=MIPI_SUSPEND_STATE;
 static unsigned int current_ldi_fps=0;
 static unsigned int current_ldi_fps_otp=0;
 unsigned int current_change_ldi_fps=0;
@@ -1746,7 +1745,7 @@ int ldi_fps(unsigned int input_fps)
 		return 0;
 	}
 
-	if(ldi_fps_state == MIPI_RESUME_STATE) {
+	if(msd.mfd->resume_state == MIPI_RESUME_STATE) {
 		dest_fps_delta = (proper_fps - (int)input_fps)/200;
 		if(dest_fps_delta == 0) {
 			pr_info("%s::No FPS Delta, Skip!! \n",__func__);
@@ -2538,7 +2537,7 @@ static int mipi_samsung_disp_send_cmd(
 
 			msd.dstat.recent_bright_level = msd.dstat.bright_level;
 #if defined(HBM_RE) || defined(CONFIG_HBM_PSRE)
-			if(msd.dstat.auto_brightness == 6) {
+			if(msd.dstat.auto_brightness >= 6 && msd.dstat.bright_level == 255) {
 				cmd_size = make_brightcontrol_hbm_set(msd.dstat.bright_level);
 				msd.dstat.hbm_mode = 1;
 			} else {
@@ -3036,7 +3035,7 @@ static int mdss_dsi_panel_on(struct mdss_panel_data *pdata)
 #endif
 
 	pr_info("mdss_dsi_panel_on DSI_MODE = %d ++\n",mipi->mode);
-	pr_debug("%s: ctrl=%p ndx=%d\n", __func__, ctrl, ctrl->ndx);
+	pr_debug("%s: ctrl=%pK ndx=%d\n", __func__, ctrl, ctrl->ndx);
 
 	if (!msd.manufacture_id)
 		msd.manufacture_id = mipi_samsung_manufacture_id(pdata);
@@ -3067,11 +3066,6 @@ static int mdss_dsi_panel_on(struct mdss_panel_data *pdata)
 #endif
 	msd.dstat.wait_disp_on = 1;
 	msd.mfd->resume_state = MIPI_RESUME_STATE;
-
-#ifdef LDI_FPS_CHANGE
-	ldi_fps_state = MIPI_RESUME_STATE;
-#endif
-
 #ifdef LDI_ADJ_VDDM_OFFSET
 	mipi_samsung_disp_send_cmd(PANEL_LDI_SET_VDDM_OFFSET, true);
 #endif
@@ -3148,7 +3142,7 @@ static int mdss_dsi_panel_off(struct mdss_panel_data *pdata)
 	pr_info("mdss_dsi_panel_off ++\n");
 	ctrl = container_of(pdata, struct mdss_dsi_ctrl_pdata,
 				panel_data);
-	pr_debug("%s: ctrl=%p ndx=%d\n", __func__, ctrl, ctrl->ndx);
+	pr_debug("%s: ctrl=%pK ndx=%d\n", __func__, ctrl, ctrl->ndx);
 
 	mipi  = &pdata->panel_info.mipi;
 
@@ -3167,10 +3161,6 @@ static int mdss_dsi_panel_off(struct mdss_panel_data *pdata)
 	msd.dstat.on = 0;
 	msd.mfd->resume_state = MIPI_SUSPEND_STATE;
 	ctrl->dsi_err_cnt = 0;
-
-#ifdef LDI_FPS_CHANGE
-	ldi_fps_state = MIPI_SUSPEND_STATE;
-#endif
 
 	mipi_samsung_disp_send_cmd(PANEL_DISP_OFF, true);
 
@@ -3442,7 +3432,7 @@ error2:
 
 }
 
-int mdss_panel_get_dst_fmt(u32 bpp, char mipi_mode, u32 pixel_packing,
+int mdss_panel_dt_get_dst_fmt(u32 bpp, char mipi_mode, u32 pixel_packing,
 				char *dst_format)
 {
 	int rc = 0;
@@ -4333,7 +4323,7 @@ static void load_tuning_file(char *filename)
 	filp = filp_open(filename, O_RDONLY, 0);
 	if (IS_ERR(filp)) {
 		printk(KERN_ERR "%s File open failed\n", __func__);
-		return;
+		goto err;
 	}
 
 	l = filp->f_path.dentry->d_inode->i_size;
@@ -4343,7 +4333,7 @@ static void load_tuning_file(char *filename)
 	if (dp == NULL) {
 		pr_info("Can't not alloc memory for tuning file load\n");
 		filp_close(filp, current->files);
-		return;
+		goto err;
 	}
 	pos = 0;
 	memset(dp, 0, l);
@@ -4356,7 +4346,7 @@ static void load_tuning_file(char *filename)
 		pr_info("vfs_read() filed ret : %d\n", ret);
 		kfree(dp);
 		filp_close(filp, current->files);
-		return;
+		goto err;
 	}
 
 	filp_close(filp, current->files);
@@ -4366,6 +4356,10 @@ static void load_tuning_file(char *filename)
 	sending_tune_cmd(dp, l);
 
 	kfree(dp);
+
+	return;
+err:
+	set_fs(fs);
 }
 
 static ssize_t tuning_show(struct device *dev,
