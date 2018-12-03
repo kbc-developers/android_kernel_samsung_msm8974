@@ -51,7 +51,7 @@
  * log
  ******************************************************************************/
 
-#if defined(CONFIG_SEC_FACTORY)
+#if defined(CONFIG_SEC_FACTORY) || !defined(CONFIG_SEC_DEBUG)
 /* shown at FACTORY */
 #define FELICA_PR_ERR(A,...) pr_err("[FELICA]"A,##__VA_ARGS__)
 
@@ -59,7 +59,6 @@
 #define FELICA_PR_INFO(A,...) 
 #define FELICA_PR_DBG(A,...) 
 #else
-extern unsigned int sec_dbg_level;
 
 /* shown at HIGH/MID/LOW, user mode:default LOW, eng mode: default MID*/
 #define FELICA_PR_ERR(A,...) pr_err("[FELICA]"A,##__VA_ARGS__)
